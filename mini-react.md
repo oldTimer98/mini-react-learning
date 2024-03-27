@@ -1,3 +1,5 @@
+
+
 当你想要快速掌握React开发技能却又感到困惑时，七天学会mini-react将成为你的最佳选择！这款全新的学习工具不仅简洁易懂，还能帮助你在短短七天内掌握React的精髓。无需繁琐的教程，无需枯燥的学习过程，只需七天，你就能成为React开发的高手！赶快加入我们，一起探索无限可能吧！`#学习React` `#快速掌握技能` `#七天挑战` `#mini-react`
 
 **查看目录**
@@ -427,7 +429,57 @@ export default App
 
 ### 实现任务调度器
 
+**问题：**为什么需要任务调度器？
+
+**原因：**当我们节点数量非常大的时候，浏览器渲染会非常卡顿，因为浏览器是单线程的
+
+**怎么解决：**分层思想，拆分每个任务，每个任务只执行两个任务
+
+![image-20240327141041901](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202403271410980.png)
+
+我们通过`requestIdleCallback`这个函数，有一个参数叫`deadline`，它代表的是该任务下剩余的时间，通过这个我们可以来去实现任务调度器
+
+```js
+function workLoop(deadline) {
+  console.log("deadline", deadline.timeRemaining())
+  requestIdleCallback(workLoop)
+}
+
+requestIdleCallback(workLoop)
+```
+
+这里就是简单的任务调度器，当剩余时间小于1的时候，我们就执行下个任务
+
+```js
+function workLoop(deadline) {
+  console.log("deadline", deadline.timeRemaining())
+
+  let shouldRun = false
+  while (!shouldRun) {
+    // 执行Dom
+    shouldRun = deadline.timeRemaining() < 1
+  }
+  requestIdleCallback(workLoop)
+}
+
+requestIdleCallback(workLoop)
+```
+
 ### 实现`fiber`架构
+
+首先认识一下什么是`fiber`架构：
+
+`Fiber` 架构是一种用于构建用户界面的 React 应用程序的新架构。它是 React 16 版本中引入的一项重要功能。
+
+在传统的 React 架构中，React 使用了一种称为“协调”（Reconciliation）的机制来处理组件的更新和渲染。这种机制是基于递归的，意味着 React 会从根组件开始递归地遍历整个组件树，以确定哪些组件需要更新，并最终进行渲染。这种递归的算法在处理大型组件树或复杂的交互式用户界面时可能会导致性能问题。
+
+`Fiber` 架构的目标是改进 React 的协调机制，以提高性能和用户体验。它引入了一种新的数据结构，称为 `Fiber`。`Fiber` 是一个轻量级的 JavaScript 对象，用于表示组件树中的每个组件和其相关的信息。
+
+`Fiber` 架构使用了一种称为“时间切片”（Time Slicing）的技术，将组件的更新工作分解为多个小任务，并使用优先级调度算法来决定哪些任务应该优先执行。这样可以使 React 在处理大型组件树时更加灵活和高效，提高了应用程序的响应能力和性能。
+
+通过引入 `Fiber` 架构，React 可以在每个任务之间进行中断和恢复，从而实现更好的并发和交互式体验。它还为 React 引入了一些新的功能，例如异步渲染、增量渲染和错误边界等。
+
+总的来说，`Fiber` 架构是 React 的一种新的渲染引擎，旨在提高性能、并发能力和用户体验。它是 React 生态系统中的重要进步之一，为构建现代 Web 应用程序提供了更好的基础。
 
 ## 第三天：统一提交 & 实现 `Function Component`
 
