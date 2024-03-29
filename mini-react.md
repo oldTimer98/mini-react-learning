@@ -467,11 +467,9 @@ requestIdleCallback(workLoop)
 
 ### 实现`fiber`架构
 
-首先认识一下什么是`fiber`架构：
+> 首先认识一下什么是`fiber`架构：
 
-`Fiber` 架构是一种用于构建用户界面的 React 应用程序的新架构。它是 React 16 版本中引入的一项重要功能。
-
-在传统的 React 架构中，React 使用了一种称为“协调”（Reconciliation）的机制来处理组件的更新和渲染。这种机制是基于递归的，意味着 React 会从根组件开始递归地遍历整个组件树，以确定哪些组件需要更新，并最终进行渲染。这种递归的算法在处理大型组件树或复杂的交互式用户界面时可能会导致性能问题。
+`Fiber` 架构是一种用于构建用户界面的 React 应用程序的新架构。它是 React 16 版本中引入的一项重要功能。在传统的 React 架构中，React 使用了一种称为“协调”（Reconciliation）的机制来处理组件的更新和渲染。这种机制是基于递归的，意味着 React 会从根组件开始递归地遍历整个组件树，以确定哪些组件需要更新，并最终进行渲染。这种递归的算法在处理大型组件树或复杂的交互式用户界面时可能会导致性能问题。
 
 `Fiber` 架构的目标是改进 React 的协调机制，以提高性能和用户体验。它引入了一种新的数据结构，称为 `Fiber`。`Fiber` 是一个轻量级的 JavaScript 对象，用于表示组件树中的每个组件和其相关的信息。
 
@@ -480,6 +478,230 @@ requestIdleCallback(workLoop)
 通过引入 `Fiber` 架构，React 可以在每个任务之间进行中断和恢复，从而实现更好的并发和交互式体验。它还为 React 引入了一些新的功能，例如异步渲染、增量渲染和错误边界等。
 
 总的来说，`Fiber` 架构是 React 的一种新的渲染引擎，旨在提高性能、并发能力和用户体验。它是 React 生态系统中的重要进步之一，为构建现代 Web 应用程序提供了更好的基础。
+
+> 如何实现呢？
+
+首先节点我们可以当成一个树结构，我们需要做的是把树结构转化成链表结构，我们才好去处理
+
+如下图，查找节点的时候，我们可以认为是**孩子，兄弟，以及叔叔**，就可以按照下面来进行的话，就是`a-b-d-e-c-f-g`
+
+![image-20240329134959683](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202403291349766.png)
+
+接下来我们就来完成这个方法吧,我们在原来的基础上进行修改
+
+首先我们把`render`方法改一下,用特殊的结构存一下
+
+```js
+// 当前的任务
+let nextWork = null
+
+function render(el, container) {
+  nextWork = {
+    dom: container,
+    props: {
+      children: [el],
+    },
+  }
+}
+```
+
+然后我们需要把我们实现的任务调度器安排上，这里需要执行的`performWorkOfUnit`函数，就是一会儿我们需要实现的具体转换方法，在执行的时候我们需要判断一下`nextWork`是否有值才行，并且返回的节点也需要重新赋值一下
+
+```js
+function workLoop(deadline) {
+  let shouldRun = false
+  while (!shouldRun && nextWork) {
+    // 执行Dom
+    nextWork = performWorkOfUnit(nextWork)
+    console.log("", nextWork)
+
+    shouldRun = deadline.timeRemaining() < 1
+  }
+  requestIdleCallback(workLoop)
+}
+
+requestIdleCallback(workLoop)
+```
+
+接下来我们就来实现这个方法`performWorkOfUnit`
+
+```js
+function performWorkOfUnit(work) {
+  if (!work.dom) {
+    // 1.创建 DOM
+    const dom = (work.dom =
+      work.type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(work.type))
+    work.parent.dom.append(dom)
+    // 2.处理 props
+
+    // 设置id和class
+    Object.keys(work.props).forEach(key => {
+      if (key !== "children") {
+        // 给DOM创建props
+        dom[key] = work.props[key]
+      }
+    })
+  }
+  // 3.处理节点之间的关系
+  const children = work.props.children
+  let prevChild = null
+  children.forEach((child, index) => {
+    const newWork = {
+      type: child.type,
+      props: child.props,
+      child: null,
+      parent: work,
+      sibling: null,
+      dom: null,
+    }
+    if (index === 0) {
+      work.child = newWork
+    } else {
+      prevChild.sibling = newWork
+    }
+    prevChild = newWork
+  })
+  // 4.返回下一个任务
+
+  if (work.child) {
+    return work.child
+  }
+  if (work.sibling) {
+    return work.sibling
+  }
+  return work.parent?.sibling
+}
+```
+
+这个方法是其实就是一个用于构建虚拟`DOM`树的函数。它接收一个表示工作单元的对象作为参数，并根据该工作单元的类型和属性创建相应的`DOM`元素。如果工作单元已经具有DOM元素，则跳过创建DOM的步骤。
+
+接下来，它处理工作单元之间的关系，将它们连接成一个树形结构。它遍历工作单元的子节点数组，并为每个子节点创建一个新的工作单元对象，并将其链接到父节点的`child`或`sibling`属性上。
+
+最后，它返回下一个要处理的工作单元。如果当前工作单元有子节点，则返回第一个子节点。如果当前工作单元有兄弟节点，则返回兄弟节点。如果当前工作单元既没有子节点也没有兄弟节点，则返回父节点的兄弟节点（如果有）。
+
+> 我们看看最后创建的节点是什么？
+
+![image-20240329163255859](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202403291632938.png)
+
+可以看到，基本上的属性是都存在的，并且更好的表现出来了节点树之间的关系
+
+到现在，我们就简单的完成了它们之间关系的转换，接下来我们对整体代码进行优化一下，拆分一下
+
+```js
+function createTextNode(text) {
+  return {
+    type: "TEXT_ELEMENT",
+    props: {
+      nodeValue: text,
+      children: [],
+    },
+  }
+}
+
+function createElement(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...props,
+      children: children.map(child => {
+        return typeof child === "string" ? createTextNode(child) : child
+      }),
+    },
+  }
+}
+
+function render(el, container) {
+  nextWork = {
+    dom: container,
+    props: {
+      children: [el],
+    },
+  }
+}
+
+let nextWork = null
+function workLoop(deadline) {
+  let shouldYield = false
+  while (!shouldYield && nextWork) {
+    nextWork = performWorkOfUnit(nextWork)
+
+    shouldYield = deadline.timeRemaining() < 1
+  }
+
+  requestIdleCallback(workLoop)
+}
+
+function createDom(type) {
+  return type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(type)
+}
+
+function updateProps(dom, props) {
+  Object.keys(props).forEach(key => {
+    if (key !== "children") {
+      dom[key] = props[key]
+    }
+  })
+}
+
+function initChildren(fiber) {
+  const children = fiber.props.children
+  let prevChild = null
+  children.forEach((child, index) => {
+    const newFiber = {
+      type: child.type,
+      props: child.props,
+      child: null,
+      parent: fiber,
+      sibling: null,
+      dom: null,
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+
+function performWorkOfUnit(fiber) {
+  if (!fiber.dom) {
+    const dom = (fiber.dom = createDom(fiber.type))
+
+    fiber.parent.dom.append(dom)
+
+    updateProps(dom, fiber.props)
+  }
+
+  initChildren(fiber)
+
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  if (fiber.sibling) {
+    return fiber.sibling
+  }
+
+  return fiber.parent?.sibling
+}
+
+requestIdleCallback(workLoop)
+
+const React = {
+  render,
+  createElement,
+}
+
+export default React
+
+```
+
+> 我们所说的`work`其实就是`fiber`架构,这就是优化后的版本。
+
+大家可以好好理解一下这个转化的过程。第二天的内容就到此为止啦！
 
 ## 第三天：统一提交 & 实现 `Function Component`
 
