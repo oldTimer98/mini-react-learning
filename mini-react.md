@@ -1,5 +1,7 @@
 
 
+
+
 当你想要快速掌握React开发技能却又感到困惑时，七天学会mini-react将成为你的最佳选择！这款全新的学习工具不仅简洁易懂，还能帮助你在短短七天内掌握React的精髓。无需繁琐的教程，无需枯燥的学习过程，只需七天，你就能成为React开发的高手！赶快加入我们，一起探索无限可能吧！`#学习React` `#快速掌握技能` `#七天挑战` `#mini-react`
 
 **查看目录**
@@ -707,9 +709,526 @@ export default React
 
 ### 实现统一提交
 
+> 问题：中途有可能没空余时间，用户会看到渲染一半的DOM
+
+> 解决思路：计算结束后统一添加到屏幕里面
+
+那怎么去实现呢？
+
+1. 这里我们创建一个`root`变量，在执行`render`的时候，把整个节点记录一下
+2. 在执行`workLoop`时，在最后执行结束前，去把未渲染完成的节点，统一的去添加在`dom`里
+3. 这里只需要执行一次，所以我们在执行完，需要将`root`设置为`null`
+
+```js
+let root = null
+function render(el, container) {
+  nextWork = {
+    dom: container,
+    props: {
+      children: [el],
+    },
+  }
+  root = nextWork
+}
+function workLoop(deadline) {
+  let shouldYield = false
+  while (!shouldYield && nextWork) {
+    nextWork = performWorkOfUnit(nextWork)
+
+    shouldYield = deadline.timeRemaining() < 1
+  }
+  // 只需要执行一次
+  if (!nextWork && root) {
+    commitRoot()
+  }
+  requestIdleCallback(workLoop)
+}
+function commitRoot() {
+  commitWork(root.child)
+  root = null
+}
+function commitWork(fiber) {
+  if (!fiber) return
+  fiber.parent.dom.append(fiber.dom)
+  commitWork(fiber.child)
+  commitWork(fiber.sibling)
+}
+```
+
+**这里需要把原来的添加操作去掉**
+
+```js
+function performWorkOfUnit(fiber) {
+  if (!fiber.dom) {
+    const dom = (fiber.dom = createDom(fiber.type))
+
+    // fiber.parent.dom.append(dom)
+
+    updateProps(dom, fiber.props)
+  }
+
+  initChildren(fiber)
+
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  if (fiber.sibling) {
+    return fiber.sibling
+  }
+
+  return fiber.parent?.sibling
+}
+```
+
+这样一来我们就解决了这个问题！
+
 ### 实现 `Function Component`
 
+我们先写一个函数组件`Couter`
+
+```jsx
+// APP.jsx
+function Counter() {
+  return (
+    <div>
+      <div>count</div>
+    </div>
+  )
+}
+function App(params) {
+  return (
+    <div>
+      mini-react
+      <Counter></Counter>
+    </div>
+  )
+}
+
+export default App
+```
+
+```js
+import React from "./core/React.js"
+import ReactDOM from "./core/ReactDom.js"
+import App from "./App.jsx"
+
+ReactDOM.createRoot(document.querySelector("#root")).render(<App></App>)
+
+```
+
+先分析一波，我们在写函数组件的时候，在函数`performWorkOfUnit中`的`fiber`的`type`，是一个函数，函数返回的内容，才是我们需要的`DOM`的,所以我们首先得判断一下
+
+具体的分析图：
+
+![image-20240401143059243](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404011430351.png)
+
+这里是判断的是否是函数，如果是函数就是函数组件，函数组件的话，我们是不需要去创建`DOM`的,并且我们是需要的`children`类型是数组,所以我们用`[]`去包裹一下,并且我们要修改下`initChildren`方法，使用我们传入的`children`
+
+```js
+function initChildren(fiber, children) {
+  let prevChild = null
+  children.forEach((child, index) => {
+    const newFiber = {
+      type: child.type,
+      props: child.props,
+      child: null,
+      parent: fiber,
+      sibling: null,
+      dom: null,
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+function performWorkOfUnit(fiber) {
+  const isFunctionComponent = typeof fiber.type === "function"
+  if (!isFunctionComponent) {
+    if (!fiber.dom) {
+      const dom = (fiber.dom = createDom(fiber.type))
+
+      // fiber.parent.dom.append(dom)
+
+      updateProps(dom, fiber.props)
+    }
+  }
+  const children = isFunctionComponent ? [fiber.type()] : fiber.props.children
+
+  initChildren(fiber, children)
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  if (fiber.sibling) {
+    return fiber.sibling
+  }
+  return fiber.parent?.sibling
+}
+```
+
+运行结果，确实渲染出来了
+
+![image-20240401152623834](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404011526931.png)
+
+接下来我们实现下`props`:我们传入一个`num`参数进去
+
+```jsx
+import React from "./core/React.js"
+
+function Counter(props) {
+  return (
+    <div>
+      <div>count:{props.num}</div>
+    </div>
+  )
+}
+
+function CounterContainer() {
+  return (
+    <div>
+      <Counter num={12}></Counter>
+    </div>
+  )
+}
+
+function App(params) {
+  return (
+    <div>
+      mini-react
+      {/* <Counter></Counter> */}
+      <CounterContainer></CounterContainer>
+    </div>
+  )
+}
+
+export default App
+```
+
+首先我们分析一下，我们之前的`createElement`函数，判断的只是`string`类型,我们现在传入的是`number`类型
+
+```js
+function createElement(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...props,
+      children: children.map(child => {
+        return typeof child === "string" ? createTextNode(child) : child
+      }),
+    },
+  }
+}
+```
+
+我们修改一下
+
+```js
+function createElement(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...props,
+      children: children.map(child => {
+        const testNode = typeof child === "string" || typeof child === "number"
+        return testNode ? createTextNode(child) : child
+      }),
+    },
+  }
+}
+```
+
+然后我们发现渲染不出来，最根本的原因就是在`commitWork`的时候，并没有添加`DOM`,原因是因为没有找到真实的`DOM`
+
+我们修改一下
+
+```js
+function commitWork(fiber) {
+  if (!fiber) return
+  let fiberParent = fiber.parent
+  while (!fiberParent.dom) {
+    fiberParent = fiberParent.parent
+  }
+
+  if (fiber.dom) {
+    fiberParent.dom.append(fiber.dom)
+  }
+  commitWork(fiber.child)
+  commitWork(fiber.sibling)
+}
+
+function performWorkOfUnit(fiber) {
+  const isFunctionComponent = typeof fiber.type === "function"
+  if (!isFunctionComponent) {
+    if (!fiber.dom) {
+      const dom = (fiber.dom = createDom(fiber.type))
+
+      // fiber.parent.dom.append(dom)
+
+      updateProps(dom, fiber.props)
+    }
+  }
+  const children = isFunctionComponent ? [fiber.type(fiber.props)] : fiber.props.children
+
+  initChildren(fiber, children)
+
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  if (fiber.sibling) {
+    return fiber.sibling
+  }
+  return fiber.parent?.sibling
+}
+```
+
+我们去找到该`Fiber`节点的父节点，并一直向上遍历直到找到一个有真实`DOM`节点的父节点。
+
+一旦找到了有真实`DOM`节点的父节点，就会将当前`Fiber`节点的`DOM`节点附加到父节点的`DOM`节点上。
+
+![image-20240401153918292](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404011539394.png)
+
+这样的话，我们就已经渲染出`props`了
+
+又发现了一个问题，就是当我们运用两个组件的时候,页面只渲染了一个
+
+```jsx
+import React from "./core/React.js"
+
+function Counter(props) {
+  return (
+    <div>
+      <div>count:{props.num}</div>
+    </div>
+  )
+}
+
+function CounterContainer() {
+  return (
+    <div>
+      <Counter num={12}></Counter>
+      <Counter num={24}></Counter>
+    </div>
+  )
+}
+
+function App(params) {
+  return (
+    <div>
+      mini-react
+      {/* <Counter></Counter> */}
+      <CounterContainer></CounterContainer>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+原因：是因为在查找兄弟的时候，我们没有找到该组件的兄弟节点，所以返回错误
+
+解决：
+
+```js
+function performWorkOfUnit(fiber) {
+  const isFunctionComponent = typeof fiber.type === "function"
+  if (!isFunctionComponent) {
+    if (!fiber.dom) {
+      const dom = (fiber.dom = createDom(fiber.type))
+
+      // fiber.parent.dom.append(dom)
+
+      updateProps(dom, fiber.props)
+    }
+  }
+  const children = isFunctionComponent ? [fiber.type(fiber.props)] : fiber.props.children
+
+  initChildren(fiber, children)
+
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  // if (fiber.sibling) {
+  //   return fiber.sibling
+  // }
+
+  // 循环去找父级
+  let nextFiber = fiber
+  while (nextFiber) {
+    if(nextFiber.sibling){
+      return nextFiber.sibling
+    }
+    nextFiber = nextFiber.parent
+  }
+  // return fiber.parent?.sibling
+}
+```
+
+这样我们就解决了寻找兄弟组件的问题
+
+接下来我们来重构下我们的代码
+
 ### 重构 `Function Component`
+
+我们创建两个函数，分别表示是函数组件和非函数组件，优化后的代码如下：
+
+```js
+function createTextNode(text) {
+  return {
+    type: "TEXT_ELEMENT",
+    props: {
+      nodeValue: text,
+      children: [],
+    },
+  }
+}
+
+function createElement(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...props,
+      children: children.map(child => {
+        const testNode = typeof child === "string" || typeof child === "number"
+        return testNode ? createTextNode(child) : child
+      }),
+    },
+  }
+}
+
+function render(el, container) {
+  nextWork = {
+    dom: container,
+    props: {
+      children: [el],
+    },
+  }
+  root = nextWork
+}
+
+let nextWork = null
+let root = null
+function workLoop(deadline) {
+  let shouldYield = false
+  while (!shouldYield && nextWork) {
+    nextWork = performWorkOfUnit(nextWork)
+
+    shouldYield = deadline.timeRemaining() < 1
+  }
+  // 只需要执行一次
+  if (!nextWork && root) {
+    commitRoot()
+  }
+  requestIdleCallback(workLoop)
+}
+function commitRoot() {
+  commitWork(root.child)
+  root = null
+}
+function commitWork(fiber) {
+  if (!fiber) return
+  let fiberParent = fiber.parent
+  while (!fiberParent.dom) {
+    fiberParent = fiberParent.parent
+  }
+
+  if (fiber.dom) {
+    fiberParent.dom.append(fiber.dom)
+  }
+  commitWork(fiber.child)
+  commitWork(fiber.sibling)
+}
+
+function createDom(type) {
+  return type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(type)
+}
+
+function updateProps(dom, props) {
+  Object.keys(props).forEach(key => {
+    if (key !== "children") {
+      dom[key] = props[key]
+    }
+  })
+}
+
+function initChildren(fiber, children) {
+  let prevChild = null
+  children.forEach((child, index) => {
+    const newFiber = {
+      type: child.type,
+      props: child.props,
+      child: null,
+      parent: fiber,
+      sibling: null,
+      dom: null,
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+
+function updateFunctionComponent(fiber) {
+  const children = [fiber.type(fiber.props)]
+
+  initChildren(fiber, children)
+}
+
+function updateHostComponent(fiber) {
+  if (!fiber.dom) {
+    const dom = (fiber.dom = createDom(fiber.type))
+    updateProps(dom, fiber.props)
+  }
+  const children = fiber.props.children
+  initChildren(fiber, children)
+}
+function performWorkOfUnit(fiber) {
+  const isFunctionComponent = typeof fiber.type === "function"
+  if (isFunctionComponent) {
+    updateFunctionComponent(fiber)
+  } else {
+    updateHostComponent(fiber)
+  }
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  // 循环去找父级
+  let nextFiber = fiber
+  while (nextFiber) {
+    if (nextFiber.sibling) return nextFiber.sibling
+    nextFiber = nextFiber.parent
+  }
+}
+
+requestIdleCallback(workLoop)
+
+const React = {
+  render,
+  createElement,
+}
+
+export default React
+
+```
+
+到目前为止，我们就已经实现了函数组件，后面我们会继续进军`VDOM`,加油`xdm`
 
 ## 第四天：进军 `vdom` 的更新
 
