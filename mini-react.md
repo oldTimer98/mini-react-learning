@@ -1234,9 +1234,536 @@ export default React
 
 ### 实现事件绑定
 
+> 问题：点击触发更新
+
+> 解决思路：基于`onClick`来注册点击事件
+
+我们先写一个`button`按钮，绑定一下事件
+
+```jsx
+import React from "./core/React.js"
+
+function Counter(props) {
+  function handleClick() {
+    console.log("click")
+  }
+  return (
+    <div>
+      <span>count:{props.num}</span>
+      <button onClick={handleClick}>counter</button>
+    </div>
+  )
+}
+
+function CounterContainer() {
+  return (
+    <div>
+      <Counter num={12}></Counter>
+      <Counter num={24}></Counter>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <CounterContainer></CounterContainer>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+然后我们来打印一下`fiber`
+
+```js
+function initChildren(fiber, children) {
+  console.log('fiber',fiber);
+  let prevChild = null
+  children.forEach((child, index) => {
+    const newFiber = {
+      type: child.type,
+      props: child.props,
+      child: null,
+      parent: fiber,
+      sibling: null,
+      dom: null,
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+```
+
+![image-20240402093531143](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404020935260.png)
+
+我们看见`button`里的`props`属性中有个`onClick`属性
+
+所以我们需要对`on`开头的后面的事件做处理
+
+我们需要判断`key`是否是`on`开头的，取出后面的事件名，并且是小写，然后去绑定到`dom`上就可以了
+
+```js
+function updateProps(dom, props) {
+  Object.keys(props).forEach(key => {
+    if (key !== "children") {
+      // 事件处理
+      if (key.startsWith("on")) {
+        const eventType = key.slice(2).toLowerCase() // 转换成小写
+        dom.addEventListener(eventType, props[key])
+      } else {
+        dom[key] = props[key]
+      }
+    }
+  })
+}
+```
+
+这个是不是很简单，类似的其他时间都是这样去处理，接下来我们去实现一下，更新`props`
+
 ### 实现更新 `props`
 
-### 重构 `props`
+更新`props`的核心，也就是对于两个虚拟`DOM`树的对比
+
+> 这里就有几个问题？
+>
+> 1. 如何得到新的`DOM`树呢？
+> 2. 如何找到老的节点？
+> 3. 如何更新`props`呢？
+
+首先我们更新一下我们的变量名称，现在的不怎么规范
+
+`wipRoot`：表示的是正在工作中的根节点，我们之前是叫做`root`
+
+`nextWorkOfUnit`：下一个工作单元，我们之前是叫做`nextWork`
+
+因为我们的`wipRoot`会清空，所以我们新建一个变量来获取一下当前的最新的，用`currentRoot`来存储
+
+```js
+let currentRoot = null 
+function commitRoot() {
+  commitWork(wipRoot.child)
+  currentRoot = wipRoot
+  wipRoot = null
+}
+```
+
+然后我们需要怎么获取老的节点呢，首先我们需要在初始化`children`的时候去处理一下,这里之前是叫做`initChildren`,现在改成`reconcileChildren`，更加规范了
+
+```js
+function reconcileChildren(fiber, children) {
+  let oldFiber = fiber.alternate?.child
+  let prevChild = null
+  children.forEach((child, index) => {
+    const isSameType = oldFiber && oldFiber.type === child.type
+
+    let newFiber
+    if (isSameType) {
+      // update
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: oldFiber.dom,
+        effectTag: "update",
+        alternate: oldFiber,
+      }
+    } else {
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: null,
+        effectTag: "placement",
+      }
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+```
+
+上面的方法，我们先来解释一下
+
+这里我们通过`alternate`意为`替代/候补`，用来存储旧节点，并且我们通过`effectTag`来区分是否是新增还是更新操作
+
+这里初始化了两个变量 `oldFiber` 和 `prevChild`。`oldFiber` 是从 `fiber.alternate` 中获取的旧 `Fiber` 节点的子节点，`prevChild` 则是用来跟踪上一个处理过的子节点。
+
+**创建新节点**:然后我们去遍历子节点，检查当前子节点和旧节点是否是同一类型的节点，用来判断是否需要更新节点。然后再去创建子节点，并且根据节点类型创建新的 `Fiber` 节点，如果是相同类型的节点则标记为更新（`"update"`），否则标记为插入（`"placement"`）
+
+**更新旧节点指针**:更新旧 `Fiber` 节点的指针，指向下一个旧节点，用于在下次循环中比较。
+
+**链接新节点**:将新创建的 `Fiber` 节点链接到 `Fiber` 树中，根据位置分别设置为父节点的子节点或上一个节点的兄弟节点，并更新 `prevChild` 为当前处理的节点，以便下次循环使用。
+
+然后我们就需要去修改**`updateProps`**
+
+```js
+function updateProps(dom, nextProps, prevProps) {
+  // Object.keys(nextProps).forEach((key) => {
+  //   if (key !== "children") {
+  //     if (key.startsWith("on")) {
+  //       const eventType = key.slice(2).toLowerCase();
+  //       dom.addEventListener(eventType, nextProps[key]);
+  //     } else {
+  //       dom[key] = nextProps[key];
+  //     }
+  //   }
+  // });
+  // {id: "1"} {}
+  // 1. old 有  new 没有 删除
+  Object.keys(prevProps).forEach(key => {
+    if (key !== "children") {
+      if (!(key in nextProps)) {
+        dom.removeAttribute(key)
+      }
+    }
+  })
+  // 2. new 有 old 没有 添加
+  // 3. new 有 old 有 修改
+  Object.keys(nextProps).forEach(key => {
+    if (key !== "children") {
+      if (nextProps[key] !== prevProps[key]) {
+        if (key.startsWith("on")) {
+          const eventType = key.slice(2).toLowerCase()
+
+          dom.removeEventListener(eventType, prevProps[key])
+
+          dom.addEventListener(eventType, nextProps[key])
+        } else {
+          dom[key] = nextProps[key]
+        }
+      }
+    }
+  })
+}
+```
+
+这里我们传入第三个参数，表示之前的`props`，这里一共有三种对比，也就是
+
+1. `old` 有  `new` 没有，那么就删除
+2. `new` 有 `old` 没有，那么就添加
+3. `new` 有 `old` 有 那么就修改
+
+这里的二三的情况，我们合在一起去做，我们通过`dom.addEventListener(eventType, nextProps[key])`去绑定事件，在这里需要注意，我们在绑定事件之前需要先清空一下。
+
+因为我们还没有实现`useState`，所以我们单独的写一个`update`方法，去执行,
+
+这里的方法很简单，就是把处理好的新节点赋值就可以啦
+
+```js
+function update() {
+  wipRoot = {
+    dom: currentRoot.dom,
+    props: currentRoot.props,
+    alternate: currentRoot,
+  }
+
+  nextWorkOfUnit = wipRoot
+}
+```
+
+接下来我们验证一下
+
+```jsx
+import React from "./core/React.js"
+
+let count = 10
+let props = { id: "11111111" }
+function Counter() {
+  // useState()
+  // 我们没有实现所以先调用一下update
+  function handleClick() {
+    console.log("click")
+    count++
+    props = {}
+    React.update()
+  }
+  return (
+    <div {...props}>
+      <span>count:{count}</span>
+      <button onClick={handleClick}>counter</button>
+    </div>
+  )
+}
+
+function CounterContainer() {
+  return (
+    <div>
+      <Counter num={12}></Counter>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <CounterContainer></CounterContainer>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404021402616.gif)
+
+> 这里的count为什么要写在外面呢？
+
+我们通过`debugger`发现，执行到`updateFunctionComponent` 执行 `fiber.type(fiber.props)` 函数组件会执行一次，返回新的`props`。这是为什么`count` 要在函数外面的原因，如果写在函数里面，因为函数作用域，会取到函数内的`count`，结果是页面不会更新。
+
+这里我们就已经实现了函数组件的事件绑定，以下是全部代码
+
+```js
+// React.js
+function createTextNode(text) {
+  return {
+    type: "TEXT_ELEMENT",
+    props: {
+      nodeValue: text,
+      children: [],
+    },
+  }
+}
+
+function createElement(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...props,
+      children: children.map(child => {
+        const isTextNode = typeof child === "string" || typeof child === "number"
+        return isTextNode ? createTextNode(child) : child
+      }),
+    },
+  }
+}
+
+function render(el, container) {
+  wipRoot = {
+    dom: container,
+    props: {
+      children: [el],
+    },
+  }
+
+  nextWorkOfUnit = wipRoot
+}
+
+// work in progress
+let wipRoot = null // 正在工作中的根节点
+let currentRoot = null 
+let nextWorkOfUnit = null // 下一个工作单元
+function workLoop(deadline) {
+  let shouldYield = false
+  while (!shouldYield && nextWorkOfUnit) {
+    nextWorkOfUnit = performWorkOfUnit(nextWorkOfUnit)
+
+    shouldYield = deadline.timeRemaining() < 1
+  }
+
+  if (!nextWorkOfUnit && wipRoot) {
+    commitRoot()
+  }
+
+  requestIdleCallback(workLoop)
+}
+
+function commitRoot() {
+  commitWork(wipRoot.child)
+  currentRoot = wipRoot
+  wipRoot = null
+}
+
+function commitWork(fiber) {
+  if (!fiber) return
+
+  let fiberParent = fiber.parent
+  while (!fiberParent.dom) {
+    fiberParent = fiberParent.parent
+  }
+
+  if (fiber.effectTag === "update") {
+    updateProps(fiber.dom, fiber.props, fiber.alternate?.props)
+  } else if (fiber.effectTag === "placement") {
+    if (fiber.dom) {
+      fiberParent.dom.append(fiber.dom)
+    }
+  }
+  commitWork(fiber.child)
+  commitWork(fiber.sibling)
+}
+
+function createDom(type) {
+  return type === "TEXT_ELEMENT" ? document.createTextNode("") : document.createElement(type)
+}
+
+function updateProps(dom, nextProps, prevProps) {
+  // Object.keys(nextProps).forEach((key) => {
+  //   if (key !== "children") {
+  //     if (key.startsWith("on")) {
+  //       const eventType = key.slice(2).toLowerCase();
+  //       dom.addEventListener(eventType, nextProps[key]);
+  //     } else {
+  //       dom[key] = nextProps[key];
+  //     }
+  //   }
+  // });
+  // {id: "1"} {}
+  // 1. old 有  new 没有 删除
+  Object.keys(prevProps).forEach(key => {
+    if (key !== "children") {
+      if (!(key in nextProps)) {
+        dom.removeAttribute(key)
+      }
+    }
+  })
+  // 2. new 有 old 没有 添加
+  // 3. new 有 old 有 修改
+  Object.keys(nextProps).forEach(key => {
+    if (key !== "children") {
+      if (nextProps[key] !== prevProps[key]) {
+        if (key.startsWith("on")) {
+          const eventType = key.slice(2).toLowerCase()
+
+          dom.removeEventListener(eventType, prevProps[key])
+
+          dom.addEventListener(eventType, nextProps[key])
+        } else {
+          dom[key] = nextProps[key]
+        }
+      }
+    }
+  })
+}
+
+function reconcileChildren(fiber, children) {
+  let oldFiber = fiber.alternate?.child
+  let prevChild = null
+  children.forEach((child, index) => {
+    const isSameType = oldFiber && oldFiber.type === child.type
+
+    let newFiber
+    if (isSameType) {
+      // update
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: oldFiber.dom,
+        effectTag: "update",
+        alternate: oldFiber,
+      }
+    } else {
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: null,
+        effectTag: "placement",
+      }
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+
+function updateFunctionComponent(fiber) {
+  const children = [fiber.type(fiber.props)]
+
+  reconcileChildren(fiber, children)
+}
+
+function updateHostComponent(fiber) {
+  if (!fiber.dom) {
+    const dom = (fiber.dom = createDom(fiber.type))
+
+    updateProps(dom, fiber.props, {})
+  }
+
+  const children = fiber.props.children
+  reconcileChildren(fiber, children)
+}
+
+function performWorkOfUnit(fiber) {
+  const isFunctionComponent = typeof fiber.type === "function"
+
+  if (isFunctionComponent) {
+    updateFunctionComponent(fiber)
+  } else {
+    updateHostComponent(fiber)
+  }
+
+  // 4. 返回下一个要执行的任务
+  if (fiber.child) {
+    return fiber.child
+  }
+
+  let nextFiber = fiber
+  while (nextFiber) {
+    if (nextFiber.sibling) return nextFiber.sibling
+    nextFiber = nextFiber.parent
+  }
+}
+
+requestIdleCallback(workLoop)
+
+function update() {
+  wipRoot = {
+    dom: currentRoot.dom,
+    props: currentRoot.props,
+    alternate: currentRoot,
+  }
+
+  nextWorkOfUnit = wipRoot
+}
+
+const React = {
+  update,
+  render,
+  createElement,
+}
+
+export default React
+
+```
+今天的学习就结束了，因为这些更新其实挺复杂的，所以还是需要多理解它的思想，链表转化，以及什么时候去更新，后面我们就要学习，如何更新`children`了,大家加油
+
 
 ## 第五天: `update children`
 
