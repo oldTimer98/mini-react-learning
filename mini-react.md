@@ -1416,7 +1416,7 @@ function reconcileChildren(fiber, children) {
 
 **链接新节点**:将新创建的 `Fiber` 节点链接到 `Fiber` 树中，根据位置分别设置为父节点的子节点或上一个节点的兄弟节点，并更新 `prevChild` 为当前处理的节点，以便下次循环使用。
 
-然后我们就需要去修改**`updateProps`**
+然后我们就需要去修改`updateProps`
 
 ```js
 function updateProps(dom, nextProps, prevProps) {
@@ -1769,11 +1769,660 @@ export default React
 
 ### `diff - 更新 children`
 
+> type不一致的时候，删除旧的，创建新的
+
+我写了个`demo`
+
+```jsx
+import React from "./core/React.js"
+
+let showBar = false
+function Counter() {
+  const foo = <div>foo</div>
+  const bar = <p>bar</p>
+  function handleShowBar() {
+    showBar = !showBar
+    React.update()
+  }
+  return (
+    <div>
+      counter
+      <div>{showBar ? bar : foo}</div>
+      <button onClick={handleShowBar}>showBar</button>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <Counter></Counter>
+    </div>
+  )
+}
+
+export default App
+```
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081003063.gif)
+
+```js
+function reconcileChildren(fiber, children) {
+  let oldFiber = fiber.alternate?.child
+  let prevChild = null
+  children.forEach((child, index) => {
+    const isSameType = oldFiber && oldFiber.type === child.type
+
+    let newFiber
+    if (isSameType) {
+      // update
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: oldFiber.dom,
+        effectTag: "update",
+        alternate: oldFiber,
+      }
+    } else {
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: null,
+        effectTag: "placement",
+      }
+       if(oldFiber){
+        console.log('oldFiber',oldFiber,newFiber);
+      }
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+}
+```
+
+问题出现的原因在这个方法里，我们判断type不相同的时候，出现了错误，我们打印一下，发现
+
+![image-20240408100711855](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081007997.png)
+
+所以我们需要记录一下我们需要删除的节点
+
+```js
+let deletions = [] // 需要删除的节点集合
+function commitRoot() {
+  deletions.forEach(commitDeletion)
+  commitWork(wipRoot.child)
+  currentRoot = wipRoot
+  wipRoot = null
+  deletions = []
+}
+function commitDeletion(fiber) {
+  fiber.parent.dom.removeChild(fiber.dom)
+}
+```
+
+我们在`commitRoot`去统一的处理需要删除的节点，这样一来，这个问题就解决了
+
+但是我们这个例子不太严谨，我们把它换成函数组件
+
+```jsx
+import React from "./core/React.js"
+
+let showBar = false
+function Counter() {
+  function Foo() {
+    return <div>foo</div>
+  }
+  function Bar() {
+    return <p>bar</p>
+  }
+  function handleShowBar() {
+    showBar = !showBar
+    React.update()
+  }
+  return (
+    <div>
+      counter
+      <div>{showBar ? <Bar></Bar> : <Foo></Foo>}</div>
+      <button onClick={handleShowBar}>showBar</button>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <Counter></Counter>
+    </div>
+  )
+}
+
+export default App
+```
+
+这样的话，我们进行点击，就报错了
+
+![image-20240408101756930](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081017073.png)
+
+这里报错，肯定是因为`fiber`没值
+
+```js
+function commitDeletion(fiber) {
+  if (fiber.dom) {
+    let fiberParent = fiber.parent
+    while (!fiberParent.dom) {
+      fiberParent = fiberParent.parent
+    }
+    fiberParent.dom.removeChild(fiber.dom)
+  } else {
+    commitDeletion(fiber.child)
+  }
+}
+```
+
+这里之前我们也写过这个相似的逻辑，大概就是去判断`DOM`是否存在，然后再去删除`DOM`
+
 ### `diff - 删除多余的老节点`
+
+> 新的比老的短，需要删除多余的老节点
+
+```jsx
+import React from "./core/React.js"
+
+let showBar = false
+function Counter() {
+  const foo = (
+    <div>
+      foo <div>child</div>
+    </div>
+  )
+  const bar = <div>bar</div>
+  function handleShowBar() {
+    showBar = !showBar
+    React.update()
+  }
+  return (
+    <div>
+      counter
+      <div>{showBar ? bar : foo}</div>
+      <button onClick={handleShowBar}>showBar</button>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <Counter></Counter>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+运行：
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081041708.gif)
+
+我们发现并没有正确显示出来，原因就是因为没有删除内部的子节点
+
+```js
+function reconcileChildren(fiber, children) {
+  let oldFiber = fiber.alternate?.child
+  let prevChild = null
+  children.forEach((child, index) => {
+    const isSameType = oldFiber && oldFiber.type === child.type
+
+    let newFiber
+    if (isSameType) {
+      // update
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: oldFiber.dom,
+        effectTag: "update",
+        alternate: oldFiber,
+      }
+    } else {
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: null,
+        effectTag: "placement",
+      }
+      if (oldFiber) {
+        deletions.push(oldFiber)
+      }
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+  // 如果还存在就删除掉
+  while (oldFiber) {
+    deletions.push(oldFiber)
+    oldFiber = oldFiber.sibling
+  }
+}
+```
+
+我们就只需要去判断`oldFiber`还存在的话，就把它添加到删除的节点里就可以了，因为此时的`oldFiber`就是我们需要删除的节点,这里注意的是，因为可能会存在多个孩子节点，所以需要使用`while`循环，且更新`oldFiber`的值
 
 ### `解决 edge case 的方式`
 
-### 优化更新 减少不必要的计算
+我们来看一下这个`edge case`
+
+```js
+import React from "./core/React.js"
+
+let showBar = false
+function Counter() {
+  const bar = <div>bar</div>
+  function handleShowBar() {
+    showBar = !showBar
+    React.update()
+  }
+  return (
+    <div>
+      counter
+      <div>{showBar && bar}</div>
+      <button onClick={handleShowBar}>showBar</button>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <Counter></Counter>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+![image-20240408111610073](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081116228.png)
+
+我们先看一下**createElement**这个方法，我们打印一下
+
+```js
+function createElement(type, props, ...children) {
+  return {
+    type,
+    props: {
+      ...props,
+      children: children.map(child => {
+        console.log("child", child)
+        const isTextNode = typeof child === "string" || typeof child === "number"
+        return isTextNode ? createTextNode(child) : child
+      }),
+    },
+  }
+}
+```
+
+![image-20240408111813716](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081118875.png)
+
+那怎么解决呢？
+
+```js
+function reconcileChildren(fiber, children) {
+  let oldFiber = fiber.alternate?.child
+  let prevChild = null
+  children.forEach((child, index) => {
+    const isSameType = oldFiber && oldFiber.type === child.type
+
+    let newFiber
+    if (isSameType) {
+      // update
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: oldFiber.dom,
+        effectTag: "update",
+        alternate: oldFiber,
+      }
+    } else {
+      if (child) {
+        newFiber = {
+          type: child.type,
+          props: child.props,
+          child: null,
+          parent: fiber,
+          sibling: null,
+          dom: null,
+          effectTag: "placement",
+        }
+      }
+      if (oldFiber) {
+        deletions.push(oldFiber)
+      }
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    prevChild = newFiber
+  })
+  // 如果还存在就删除掉
+  while (oldFiber) {
+    deletions.push(oldFiber)
+    oldFiber = oldFiber.sibling
+  }
+}
+```
+
+我们需要判断一下`child`为`ture`的时候才去新增节点
+
+我们再改一下，把内容放在里面试试
+
+```js
+import React from "./core/React.js"
+
+let showBar = false
+function Counter() {
+  const bar = <div>bar</div>
+  function handleShowBar() {
+    showBar = !showBar
+    React.update()
+  }
+  return (
+    <div>
+      counter
+      {showBar && bar}
+      {/* <div>{showBar && bar}</div> */}
+      <button onClick={handleShowBar}>showBar</button>
+    </div>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      mini-react
+      <Counter></Counter>
+    </div>
+  )
+}
+
+export default App
+```
+
+还是报错了
+
+![image-20240408112101238](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081121398.png)
+
+解决：
+
+```js
+function reconcileChildren(fiber, children) {
+  let oldFiber = fiber.alternate?.child
+  let prevChild = null
+  children.forEach((child, index) => {
+    const isSameType = oldFiber && oldFiber.type === child.type
+
+    let newFiber
+    if (isSameType) {
+      // update
+      newFiber = {
+        type: child.type,
+        props: child.props,
+        child: null,
+        parent: fiber,
+        sibling: null,
+        dom: oldFiber.dom,
+        effectTag: "update",
+        alternate: oldFiber,
+      }
+    } else {
+      if (child) {
+        newFiber = {
+          type: child.type,
+          props: child.props,
+          child: null,
+          parent: fiber,
+          sibling: null,
+          dom: null,
+          effectTag: "placement",
+        }
+      }
+      if (oldFiber) {
+        deletions.push(oldFiber)
+      }
+    }
+
+    if (oldFiber) {
+      oldFiber = oldFiber.sibling
+    }
+
+    if (index === 0) {
+      fiber.child = newFiber
+    } else {
+      prevChild.sibling = newFiber
+    }
+    if (newFiber) {
+      prevChild = newFiber
+    }
+  })
+  // 如果还存在就删除掉
+  while (oldFiber) {
+    deletions.push(oldFiber)
+    oldFiber = oldFiber.sibling
+  }
+}
+```
+
+我们只需要判断一下`newFiber`是否存在就好了，存在的话，再去赋值`prevChild`
+
+### `优化更新-减少不必要的计算`
+
+> 问题：更新子组件的时候，其它不相关的组件也会重新执行，造成了浪费
+
+```js
+import React from "./core/React.js"
+
+let countFoo1 = 1
+function Foo() {
+  console.log("Foo return ")
+  function handleClick() {
+    countFoo1++
+    React.update()
+  }
+  return (
+    <div>
+      <h1>Foo : {countFoo1}</h1>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+let countBar = 1
+function Bar() {
+  console.log("Bar return ")
+  function handleClick() {
+    countBar++
+    React.update()
+  }
+  return (
+    <div>
+      <h1>Bar : {countBar}</h1>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+let countApp = 1
+function App() {
+  console.log("App return ")
+  function handleClick() {
+    countApp++
+    React.update()
+  }
+  return (
+    <div>
+      <h1>App : {countApp}</h1>
+      <button onClick={handleClick}>click</button>
+      <Foo></Foo>
+      <Bar></Bar>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+以上就是测试代码，当我们点击APP的按钮的时候，发现其他的组件也会重新渲染
+
+![image-20240408113622058](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404081136240.png)
+
+我们来分析一下，当我们更新组件的时候，会遍历完整的树，当我们处理兄弟节点的时候，我们再去做处理
+
+```js
+let wipFiber = null // 正在工作中的 fiber
+function update() {
+  let currentFiber = wipFiber
+  return () => {
+    wipRoot = {
+      ...currentFiber,
+      alternate: currentFiber,
+    }
+
+    nextWorkOfUnit = wipRoot
+  }
+}
+function workLoop(deadline) {
+  let shouldYield = false
+  while (!shouldYield && nextWorkOfUnit) {
+    nextWorkOfUnit = performWorkOfUnit(nextWorkOfUnit)
+
+    if (wipRoot?.sibling?.type === nextWorkOfUnit?.type) {
+      nextWorkOfUnit = undefined
+    }
+
+    shouldYield = deadline.timeRemaining() < 1
+  }
+
+  if (!nextWorkOfUnit && wipRoot) {
+    commitRoot()
+  }
+
+  requestIdleCallback(workLoop)
+}
+```
+
+这里有一个比较厉害的点：也就是为什么要使用闭包去返回
+
+> 闭包可以让我们在函数内部创建一个持久的引用，即使函数执行完毕，该引用仍然存在。在这种情况下，闭包被用来创建一个函数作为返回值，并且该函数引用了外部函数中的变量`currentFiber`。
+>
+> 在每次调用update函数时，都会创建一个新的闭包，其中的`currentFiber`变量是函数调用时的当前值。由于闭包的特性，每个闭包都会保留自己独立的`currentFiber`引用。因此，当返回的函数被调用时，它引用的`currentFiber`仍然是`update`函数调用时的那个值。
+>
+> 这种机制允许我们在闭包中捕获`currentFiber`的值，并在返回的函数中使用它。在当前代码中，返回的函数被赋值给了一个变量，每次调用该函数时，它会将`currentFiber`的值设置为`wipRoot`，并将`nextWorkOfUnit`设置为`wipRoot`。
+>
+> 总结起来，使用闭包可以让我们在返回的函数中保留对外部函数中变量的引用，以便在函数执行完毕后仍然能够访问和使用这些变量。
+
+这样的话我们的组件也需要改一下
+
+```jsx
+import React from "./core/React.js"
+let countFoo1 = 1
+function Foo() {
+  console.log("Foo return ")
+  const update = React.update()
+  function handleClick() {
+    countFoo1++
+    update()
+  }
+  return (
+    <div>
+      <h1>Foo : {countFoo1}</h1>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+let countBar = 1
+function Bar() {
+  console.log("Bar return ")
+  const update = React.update()
+  function handleClick() {
+    countBar++
+    update()
+  }
+  return (
+    <div>
+      <h1>Bar : {countBar}</h1>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+let countApp = 1
+function App() {
+  console.log("App return ")
+  const update = React.update()
+  function handleClick() {
+    countApp++
+    update()
+  }
+  return (
+    <div>
+      <h1>App : {countApp}</h1>
+      <button onClick={handleClick}>click</button>
+      <Foo></Foo>
+      <Bar></Bar>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+这样我们就能够获取到当前调用的组件了，去比较他们的`type`是否一致，这样就不会再去触发其他的更新了
+
+到目前为止，我们已经实现大部分了，后面两天是去学习`useState`和`useEffect`，等待下次更新
 
 ## 第六天：搞定 `useState`
 
@@ -1781,7 +2430,7 @@ export default React
 
 ### `批量执行 action`
 
-### 提前检测 减少不必要的更新
+### `提前检测-减少不必要的更新`
 
 ## 第七天：搞定 `useEffect`
 
