@@ -2428,9 +2428,279 @@ export default App
 
 ### `实现 useState`
 
+我们先写一个`demo`
+
+```jsx
+import React from "./core/React.js"
+function Foo() {
+  const [count, setCount] = React.useState(10)
+  function handleClick() {
+    setCount(pre => pre + 2)
+  }
+  return (
+    <div>
+      <h1>Foo : {count}</h1>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+function App() {
+  return (
+    <div>
+      <h1>App</h1>
+      <Foo></Foo>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+这里的话，我们先实现通过函数去实现数据更新
+
+```js
+function useState(initial) {
+  let currentFiber = wipFiber
+  let oldHook = currentFiber.alternate?.stateHook
+
+  const stateHook = {
+    state: oldHook ? oldHook.state : initial,
+  }
+
+  currentFiber.stateHook = stateHook
+
+  function setState(action) {
+
+    stateHook.state = action(stateHook.state)
+
+    wipRoot = {
+      ...currentFiber,
+      alternate: currentFiber,
+    }
+
+    nextWorkOfUnit = wipRoot
+  }
+
+  return [stateHook.state, setState]
+}
+
+```
+
+在函数内部，首先获取当前的`Fiber`节点`currentFiber`，然后尝试获取之前的钩子状态`oldHook`，如果存在的话。接着创建一个`stateHook`对象，其中的`state`属性被初始化为之前的状态或者初始值`initial`。
+
+然后将`stateHook`对象赋值给`currentFiber`的`stateHook`属性。接下来定义了`setState`函数，它接受一个`action`作为参数，这个`action`是一个函数，用于根据当前状态计算新的状态。在`setState`函数内部，就是之前的`update`函数了。
+
+最后，`useState`函数返回一个数组，其中第一个元素是状态的当前值，第二个元素是`setState`函数，用于更新状态。
+
+我们可以看到，确实更新了
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404091432112.gif)
+
+
+
+但是呢，如果我们写了多个`useState`，就会出现问题，因为我们的`oldHook`是一个变量，所以我们需要用数组来存储
+
+```jsx
+import React from "./core/React.js"
+function Foo() {
+  const [count, setCount] = React.useState(10)
+  const [bar, setBar] = React.useState("bar")
+  function handleClick() {
+    setCount(pre => pre + 2)
+    setBar(pre => pre + "bar")
+  }
+  return (
+    <div>
+      <h1>Foo : {count}</h1>
+      <div>{bar}</div>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+function App() {
+  return (
+    <div>
+      <h1>App</h1>
+      <Foo></Foo>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+```js
+let stateHooks
+let stateHookIndex
+function useState(initial) {
+  let currentFiber = wipFiber
+  let oldHook = currentFiber.alternate?.stateHooks[stateHookIndex]
+
+  const stateHook = {
+    state: oldHook ? oldHook.state : initial,
+  }
+  stateHookIndex++
+  stateHooks.push(stateHook)
+  currentFiber.stateHooks = stateHooks
+
+  function setState(action) {
+    stateHook.state = action(stateHook.state)
+
+    wipRoot = {
+      ...currentFiber,
+      alternate: currentFiber,
+    }
+
+    nextWorkOfUnit = wipRoot
+  }
+
+  return [stateHook.state, setState]
+}
+```
+
+我们这里通过设置`stateHooks`变量去存储`stateHook`,并且设置`stateHookIndex`索引来获取老的值，这样就不会影响下次更新了，这也是为什么`useState`必须写在顶层，不能用`if`语句去包裹的原因,
+
+这里需要注意的是，每次更新后，需要把值清空
+
+```js
+function updateFunctionComponent(fiber) {
+  stateHooks = []
+  stateHookIndex = 0
+  wipFiber = fiber
+  const children = [fiber.type(fiber.props)]
+
+  reconcileChildren(fiber, children)
+}
+```
+
+这样一来我们就已经完成了`useState`
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404091444366.gif)
+
 ### `批量执行 action`
 
+上一节我们写的方法，其实是每次触发`useState`的`action`的时候，都会更新一下视图，这样是不太好的，会造成性能上的浪费，所以，这一节我们来实现一下`useState`的批处理
+
+```js
+let stateHooks
+let stateHookIndex
+function useState(initial) {
+  let currentFiber = wipFiber
+  let oldHook = currentFiber.alternate?.stateHooks[stateHookIndex]
+
+  const stateHook = {
+    state: oldHook ? oldHook.state : initial,
+    queue: oldHook ? oldHook.queue : [],
+  }
+  // 调用action
+  stateHook.queue.forEach(action => {
+    stateHook.state = action(stateHook.state)
+  })
+  stateHook.queue = []
+
+  stateHookIndex++
+  stateHooks.push(stateHook)
+  currentFiber.stateHooks = stateHooks
+
+  function setState(action) {
+    stateHook.queue.push(typeof action === "function" ? action : () => action)
+    // stateHook.state = action(stateHook.state)
+
+    wipRoot = {
+      ...currentFiber,
+      alternate: currentFiber,
+    }
+
+    nextWorkOfUnit = wipRoot
+  }
+
+  return [stateHook.state, setState]
+}
+```
+
+这里我们加入一个`queue`来存储`action`，并循环去执行`action`，这样就实现了把多次`action`的操作，转化成一次去执行。
+
+我们还去判断了一下`action`的类型，如果不是函数，那么我们就包装成一个函数，这样我们就实现了直接输入值的情况。
+
 ### `提前检测-减少不必要的更新`
+
+当值没有发生改变的时候，我们应该不需要去更新组件
+
+```js
+import React from "./core/React.js"
+function Foo() {
+  const [count, setCount] = React.useState(10)
+  const [bar, setBar] = React.useState("bar")
+  function handleClick() {
+    setBar(pre => "bar")
+  }
+  return (
+    <div>
+      <h1>Foo : {count}</h1>
+      <div>{bar}</div>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+function App() {
+  return (
+    <div>
+      <h1>App</h1>
+      <Foo></Foo>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+我们只需要去判断一下值是否相等就行了！！！
+
+```js
+let stateHooks
+let stateHookIndex
+function useState(initial) {
+  let currentFiber = wipFiber
+  let oldHook = currentFiber.alternate?.stateHooks[stateHookIndex]
+
+  const stateHook = {
+    state: oldHook ? oldHook.state : initial,
+    queue: oldHook ? oldHook.queue : [],
+  }
+  // 调用action
+  stateHook.queue.forEach(action => {
+    stateHook.state = action(stateHook.state)
+  })
+  stateHook.queue = []
+
+  stateHookIndex++
+  stateHooks.push(stateHook)
+  currentFiber.stateHooks = stateHooks
+
+  function setState(action) {
+    // 处理值一样的情况
+    const eagerState = typeof action === "function" ? action(stateHook.state) : action
+    if (eagerState === stateHook.state) return
+
+    stateHook.queue.push(typeof action === "function" ? action : () => action)
+    // stateHook.state = action(stateHook.state)
+
+    wipRoot = {
+      ...currentFiber,
+      alternate: currentFiber,
+    }
+
+    nextWorkOfUnit = wipRoot
+  }
+
+  return [stateHook.state, setState]
+}
+```
+
+到目前为止，我们已经完成了`useState`的方法了，下一期将进入`useEffect`的学习
 
 ## 第七天：搞定 `useEffect`
 
