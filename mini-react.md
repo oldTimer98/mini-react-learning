@@ -3090,3 +3090,403 @@ function commitEffectHook() {
 ## 第八天：实现 `todo-list`
 
 ### `用 mini-react 实现 todo-list`
+
+我们先来实现静态页面，然后再去实现事件相关
+
+我们先创建一个文件夹`src`，`src`里有个`Todos.jsx`
+
+```js
+import React from "../core/React.js"
+
+function Todos() {
+  const todos = [
+    {
+      title: "吃饭",
+    },
+    {
+      title: "喝水",
+    },
+    {
+      title: "写代码",
+    },
+  ]
+  return (
+    <div>
+      <h1>TODOS</h1>
+      <div>
+        <input type="text" />
+        <button>ADD</button>
+      </div>
+      <ul>
+        {...todos.map(todo => {
+          return <li>{todo.title}</li>
+        })}
+      </ul>
+    </div>
+  )
+}
+
+export default Todos
+```
+
+然后我们导入一下，这里注意，因为是`jsx`文件，需要去获取一下`React`这个方法，所以我们一般都需要手动导入一下
+
+```js
+import React from "./core/React.js"
+
+import Todos from "./src/Todos.jsx"
+
+function App() {
+  return (
+    <div>
+      <Todos />
+    </div>
+  )
+}
+
+export default App
+
+```
+
+运行一下，没有什么问题
+
+![image-20240416153929707](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161539789.png)
+
+接下来就直接上代码吧,这里增加了添加，删除，取消，完成这四个功能
+
+```js
+import React from "../core/React.js"
+
+function Todos() {
+  const [todos, setTodos] = React.useState([
+    {
+      title: "吃饭",
+      id: crypto.randomUUID(),
+      status: "active",
+    },
+    {
+      title: "喝水",
+      id: crypto.randomUUID(),
+      status: "done",
+    },
+    {
+      title: "写代码",
+      id: crypto.randomUUID(),
+      status: "done",
+    },
+  ])
+  const [inputVal, setInputVal] = React.useState("")
+
+  // 添加todo
+  function addTodo(title) {
+    setTodos(todos => [...todos, { title }])
+  }
+  // 添加按钮
+  function handleAdd() {
+    addTodo(inputVal)
+    setInputVal("")
+  }
+  // 删除功能
+  function removeTodo(id) {
+    const newTodos = todos.filter(todo => todo.id !== id)
+    setTodos(newTodos)
+  }
+  // 完成功能
+  function doneTodo(id) {
+    const newTodos = todos.map(todo => {
+      if (todo.id === id) {
+        todo.status = "done"
+      }
+      return todo
+    })
+    setTodos(newTodos)
+  }
+  // 取消功能
+  function cancelTodo(id) {
+    const newTodos = todos.map(todo => {
+      if (todo.id === id) {
+        todo.status = "active"
+      }
+      return todo
+    })
+    setTodos(newTodos)
+  }
+  return (
+    <div>
+      <h1>TODOS</h1>
+      <div>
+        <input type="text" value={inputVal} onChange={e => setInputVal(e.target.value)} />
+        <button onClick={handleAdd}>ADD</button>
+      </div>
+      <ul>
+        {...todos.map(todo => {
+          return <TodoItem todo={todo} removeTodo={removeTodo} cancelTodo={cancelTodo} doneTodo={doneTodo}></TodoItem>
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function TodoItem({ todo, removeTodo, cancelTodo, doneTodo }) {
+  return (
+    <li className={todo.status}>
+      <span>{todo.title}</span>
+      <button
+        onClick={() => {
+          removeTodo(todo.id)
+        }}
+      >
+        remove
+      </button>
+      <button
+        onClick={() => {
+          cancelTodo(todo.id)
+        }}
+      >
+        cancel
+      </button>
+      <button
+        onClick={() => {
+          doneTodo(todo.id)
+        }}
+      >
+        done
+      </button>
+    </li>
+  )
+}
+export default Todos
+
+```
+
+并且我们在`style.css`中新加了样式
+
+```css
+.done {
+  text-decoration: line-through;
+  font-weight: 1000;
+}
+.active {
+  color: red;
+}
+button {
+  margin-left: 10px;
+}
+```
+
+引入样式
+
+```js
+import React from "./core/React.js"
+
+import Todos from "./src/Todos.jsx"
+import "./style.css"
+
+function App() {
+  return (
+    <div>
+      <Todos />
+    </div>
+  )
+}
+
+export default App
+
+```
+
+当我们运行的时候，发现事件不好使了，通过`debugger`，我们发现在更新的时候我们去判断一下`fiber.dom`存在
+
+```js
+function commitWork(fiber) {
+  if (!fiber) return
+
+  let fiberParent = fiber.parent
+  while (!fiberParent.dom) {
+    fiberParent = fiberParent.parent
+  }
+
+  if (fiber.effectTag === "update" && fiber.dom) {
+    updateProps(fiber.dom, fiber.props, fiber.alternate?.props)
+  } else if (fiber.effectTag === "placement") {
+    if (fiber.dom) {
+      fiberParent.dom.append(fiber.dom)
+    }
+  }
+  commitWork(fiber.child)
+  commitWork(fiber.sibling)
+}
+```
+
+修改完后，运行执行,按钮功能也是运行成功了！
+
+![image-20240416161105936](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161611029.png)
+
+接下来我们继续增加了一些功能,例如保存数据、切换数据，并且我们还使用了`useEffect`去初始化数据，已经去判断当`radio`切换时，切换数据
+
+以下是完整代码：
+
+```js
+import React from "../core/React.js"
+
+function Todos() {
+  const [todos, setTodos] = React.useState([])
+  const [inputVal, setInputVal] = React.useState("")
+  const [displayTodos, setDisplayTodos] = React.useState([])
+  const [filter, setFilter] = React.useState("all")
+  React.useEffect(() => {
+    const rawTodos = localStorage.getItem("todos")
+    if (rawTodos) {
+      setTodos(JSON.parse(rawTodos))
+    }
+  }, [])
+
+  // 创建todo
+  function createTodo(title) {
+    return { title, id: crypto.randomUUID(), status: "active" }
+  }
+  // 添加todo
+  function addTodo(title) {
+    setTodos(todos => [...todos, createTodo(title)])
+  }
+  // 添加按钮
+  function handleAdd() {
+    addTodo(inputVal)
+    setInputVal("")
+  }
+  // 删除功能
+  function removeTodo(id) {
+    const newTodos = todos.filter(todo => todo.id !== id)
+    setTodos(newTodos)
+  }
+  // 完成功能
+  function doneTodo(id) {
+    const newTodos = todos.map(todo => {
+      if (todo.id === id) {
+        todo.status = "done"
+      }
+      return todo
+    })
+    setTodos(newTodos)
+  }
+  // 取消功能
+  function cancelTodo(id) {
+    const newTodos = todos.map(todo => {
+      if (todo.id === id) {
+        todo.status = "active"
+      }
+      return todo
+    })
+    setTodos(newTodos)
+  }
+  // 保存功能
+  function saveTodo() {
+    localStorage.setItem("todos", JSON.stringify(todos))
+  }
+  // 切换过滤器
+  React.useEffect(() => {
+    if (filter === "all") {
+      setDisplayTodos(todos)
+    } else {
+      const newTodo = todos.filter(todo => todo.status === filter)
+      setDisplayTodos(newTodo)
+    }
+  }, [filter, todos])
+  return (
+    <div>
+      <h1>TODOS</h1>
+      <div>
+        <input type="text" value={inputVal} onChange={e => setInputVal(e.target.value)} />
+        <button onClick={handleAdd}>add</button>
+        <button onClick={saveTodo}>save</button>
+      </div>
+      <div>
+        <input type="radio" name="filter" id="all" checked={filter === "all"} onChange={() => setFilter("all")} />
+        <label htmlFor="all">all</label>
+        <input
+          type="radio"
+          name="filter"
+          id="active"
+          checked={filter === "active"}
+          onChange={() => setFilter("active")}
+        />
+        <label htmlFor="active">active</label>
+        <input type="radio" name="filter" id="done" checked={filter === "done"} onChange={() => setFilter("done")} />
+        <label htmlFor="done">done</label>
+      </div>
+      <ul>
+        {...displayTodos.map(todo => {
+          return <TodoItem todo={todo} removeTodo={removeTodo} cancelTodo={cancelTodo} doneTodo={doneTodo}></TodoItem>
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function TodoItem({ todo, removeTodo, cancelTodo, doneTodo }) {
+  return (
+    <li className={todo.status}>
+      <span>{todo.title}</span>
+      <button
+        onClick={() => {
+          removeTodo(todo.id)
+        }}
+      >
+        remove
+      </button>
+      <button
+        onClick={() => {
+          cancelTodo(todo.id)
+        }}
+      >
+        cancel
+      </button>
+      <button
+        onClick={() => {
+          doneTodo(todo.id)
+        }}
+      >
+        done
+      </button>
+    </li>
+  )
+}
+export default Todos
+
+```
+
+运行一下，非常完美
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161641351.gif)
+
+在执行`useEffect`初始化的时候有一个错误，解决方法是
+
+在`useEffect`的`deps`为空时，当数据发生改变也需要重新渲染视图
+
+```js
+function workLoop(deadline) {
+  let shouldYield = false
+  while (!shouldYield && nextWorkOfUnit) {
+    nextWorkOfUnit = performWorkOfUnit(nextWorkOfUnit)
+
+    if (wipRoot?.sibling?.type === nextWorkOfUnit?.type) {
+      nextWorkOfUnit = undefined
+    }
+
+    shouldYield = deadline.timeRemaining() < 1
+  }
+
+  if (!nextWorkOfUnit && wipRoot) {
+    commitRoot()
+  }
+
+  if (nextWorkOfUnit && !wipRoot) {
+    wipRoot = currentRoot
+  }
+
+  requestIdleCallback(workLoop)
+}
+```
+
+到目前为止，所有的功能就完成，非常感谢大家的阅读和喜欢，后面我还会继续努力，去分享更多技术的
+
+以下是代码仓库，已经分类到每一天了
