@@ -2706,7 +2706,384 @@ function useState(initial) {
 
 ### `实现 useEffect`
 
+我们先来看看怎么使用
+
+```js
+// useEffect
+// 调用时机是在 React 完成对 DOM 的渲染之后，并且在浏览器完成绘制之前
+useEffect(() => {
+    console.log("init")
+}, [])
+
+useEffect(() => {
+    console.log("init")
+}, [count])
+```
+
+`useEffect` 接收两个参数，一个`callback`，和一个`deps`，当`deps`是空的时候，相当于初始化，如果有依赖项，会在依赖项发生变化的时候再次调用一次
+
+接下来我们先试试怎么实现
+
+```jsx
+import React from "./core/React.js"
+
+// useEffect
+// 调用时机是在 React 完成对 DOM 的渲染之后，并且在浏览器完成绘制之前
+
+function Foo() {
+  const [count, setCount] = React.useState(10)
+  const [bar, setBar] = React.useState("bar")
+  function handleClick() {
+    setCount(c => c + 1)
+    setBar(() => "bar")
+  }
+
+  React.useEffect(() => {
+    console.log("init")
+  }, [])
+
+  return (
+    <div>
+      <h1>Foo : {count}</h1>
+      <div>{bar}</div>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+function App() {
+  return (
+    <div>
+      <h1>App</h1>
+      <Foo></Foo>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+我们来创建一个`useEffect`函数,并导出
+
+这里的话，我们还是跟useState一样，我们定义一个`effectHook`,把它存在我们的`Fiber`节点中
+
+```js
+function useEffect(callback, deps) {
+  const effectHook = {
+    callback,
+    deps,
+  }
+
+  wipFiber.effectHook = effectHook
+}
+
+const React = {
+  update,
+  render,
+  createElement,
+  useState,
+  useEffect,
+}
+```
+
+然后我们应该在那去调用呢，看看调用时机，时机应该在 `React` 完成对 `DOM` 的渲染之后
+
+所以我们应该在`commitWork`调用完再去调用,我们写一个方法`commitEffectHook`,然后调用它，这里因为需要处理子节点和兄弟节点，所以我们需要递归去调用它
+
+```js
+function commitRoot() {
+  deletions.forEach(commitDeletion)
+  commitWork(wipRoot.child)
+  commitEffectHook()
+  currentRoot = wipRoot
+  wipRoot = null
+  deletions = []
+}
+function commitEffectHook() {
+  function run(fiber) {
+    if (!fiber) return
+    fiber.effectHook?.callback()
+    run(fiber.child)
+    run(fiber.sibling)
+  }
+  run(wipRoot)
+}
+```
+
+运行我们看一下
+
+![image-20240416101248209](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161012357.png)
+
+可以看到，确实执行了，接下来我们加上依赖项
+
+```js
+  React.useEffect(() => {
+    console.log("init")
+  }, [count])
+```
+
+这里我们先判断是不是初始化还是`update`，可以通过之前的`alternate`字段来判断，有值的话就是`update`，在更新的时候，我们需要判断`deps`有没有更新，有更新的话，我们才去执行`callback`
+
+```js
+function commitEffectHook() {
+  function run(fiber) {
+    if (!fiber) return
+    if (!fiber.alternate) {
+      // 初始化
+      fiber.effectHook?.callback()
+    } else {
+      // update  需要去检测deps有没有更新
+      const oldEffectHook = fiber.alternate?.effectHook
+
+      const needUpdate = oldEffectHook?.deps.some((oldDep, index) => {
+        return oldDep !== fiber.effectHook?.deps[index]
+      })
+
+      if (needUpdate) {
+        fiber.effectHook?.callback()
+      }
+    }
+    run(fiber.child)
+    run(fiber.sibling)
+  }
+  run(wipRoot)
+}
+```
+
+我们来试试效果
+
+![动画](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161019235.gif)
+
+确实可以正常执行了，那如果有多个`useEffect`怎么处理呢
+
+```jsx
+  React.useEffect(() => {
+    console.log("init")
+  }, [])
+
+  React.useEffect(() => {
+    console.log("update", count)
+  }, [count])
+```
+
+先看看实现，定义一个`effectHooks`去存多个`useEffect`，然后放到`effectHooks`这个属性上，初始化的时候，应该是在初始化`functionComponent`上的，所以我们也加一下；然后就是处理内部了，循环`effectHooks`去执行里面的`callback`,这个流程跟`useState`的处理很类似
+
+```js
+let effectHooks
+function useEffect(callback, deps) {
+  const effectHook = {
+    callback,
+    deps,
+  }
+  effectHooks.push(effectHook)
+  wipFiber.effectHooks = effectHooks
+}
+
+function updateFunctionComponent(fiber) {
+  stateHooks = []
+  effectHooks = []
+  stateHookIndex = 0
+  wipFiber = fiber
+  const children = [fiber.type(fiber.props)]
+
+  reconcileChildren(fiber, children)
+}
+
+function commitEffectHook() {
+  function run(fiber) {
+    if (!fiber) return
+    if (!fiber.alternate) {
+      // 初始化
+      fiber.effectHooks?.forEach(hook => hook?.callback())
+    } else {
+      // update  需要去检测deps有没有更新
+
+      fiber.effectHooks?.forEach((newHook, index) => {
+        const oldEffectHook = fiber.alternate?.effectHooks[index]
+
+        const needUpdate = oldEffectHook?.deps.some((oldDep, i) => {
+          return oldDep !== newHook.deps[i]
+        })
+
+        needUpdate && newHook.callback()
+      })
+    }
+    run(fiber.child)
+    run(fiber.sibling)
+  }
+  run(wipRoot)
+}
+```
+
+之后我们试试效果怎么样？
+
+![image-20240416102938420](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161029573.png)
+
+可以看到，点击的时候只触发了`update`的`callback `
+
+最终代码,我们就加了个判断，当`deps`不为空的时候再去执行比较
+
+```js
+function commitEffectHook() {
+  function run(fiber) {
+    if (!fiber) return
+    if (!fiber.alternate) {
+      // 初始化
+      fiber.effectHooks?.forEach(hook => hook?.callback())
+    } else {
+      // update  需要去检测deps有没有更新
+
+      fiber.effectHooks?.forEach((newHook, index) => {
+        if (newHook.deps.length > 0) {
+          const oldEffectHook = fiber.alternate?.effectHooks[index]
+
+          const needUpdate = oldEffectHook?.deps.some((oldDep, i) => {
+            return oldDep !== newHook.deps[i]
+          })
+
+          needUpdate && newHook.callback()
+        }
+      })
+    }
+    run(fiber.child)
+    run(fiber.sibling)
+  }
+  run(wipRoot)
+}
+```
+
 ### `实现 cleanup`
+
+首先我们来了解一下`cleanUp`的机制
+
+`cleanUp` 函数会在组件卸载的时候执行 在调用`useEffect`之前进行调用 ，当`deps` 为空的时候不会调用返回的`cleanUp `
+
+我写了一个`demo`文件，我们可以看看它应该如何打印呢
+
+1. `deps`为空的时候，它的`cleanUp`是不会调用的
+2. 当`deps`不为空的时候，执行下一次的`useEffect`的时候之前会先执行一下`cleanUp`函数
+
+```jsx
+import React from "./core/React.js"
+
+// useEffect
+// 调用时机是在 React 完成对 DOM 的渲染之后，并且在浏览器完成绘制之前
+// cleanUp 函数会在组件卸载的时候执行 在调用useEffect之前进行调用 ，当deps 为空的时候不会调用返回的cleanup
+
+function Foo() {
+  const [count, setCount] = React.useState(10)
+  const [bar, setBar] = React.useState("bar")
+  function handleClick() {
+    setCount(c => c + 1)
+    setBar(() => "bar")
+  }
+  React.useEffect(() => {
+    console.log("init")
+    return () => {
+      console.log("cleanUp 0")
+    }
+  }, [])
+
+  React.useEffect(() => {
+    console.log("update", count)
+    return () => {
+      console.log("cleanUp 1")
+    }
+  }, [count])
+
+  React.useEffect(() => {
+    console.log("update", count)
+    return () => {
+      console.log("cleanUp 2")
+    }
+  }, [count])
+
+  return (
+    <div>
+      <h1>Foo : {count}</h1>
+      <div>{bar}</div>
+      <button onClick={handleClick}>click</button>
+    </div>
+  )
+}
+function App() {
+  return (
+    <div>
+      <h1>App</h1>
+      <Foo></Foo>
+    </div>
+  )
+}
+
+export default App
+
+```
+
+实现:
+
+首先我们存一个`cleanUp`属性,然后我们去执行`hook`的`callback`的时候，需要把结果放在`hook`的`cleanUp`属性上，接下来我们就可以去执行了；
+
+我们先创建一个方法，跟run类似，我们叫做`runCleanUp`吧，注意我们这里只需要当`deps`的`length`大于0的时候才去执行
+
+```js
+function useEffect(callback, deps) {
+  const effectHook = {
+    callback,
+    deps,
+    cleanUp: undefined,
+  }
+  effectHooks.push(effectHook)
+  wipFiber.effectHooks = effectHooks
+}
+
+function commitEffectHook() {
+  function run(fiber) {
+    if (!fiber) return
+    if (!fiber.alternate) {
+      // 初始化
+      fiber.effectHooks?.forEach(hook => {
+        hook.cleanUp = hook?.callback()
+      })
+    } else {
+      // update  需要去检测deps有没有更新
+
+      fiber.effectHooks?.forEach((newHook, index) => {
+        if (newHook.deps.length > 0) {
+          const oldEffectHook = fiber.alternate?.effectHooks[index]
+
+          const needUpdate = oldEffectHook?.deps.some((oldDep, i) => {
+            return oldDep !== newHook.deps[i]
+          })
+
+          needUpdate && (newHook.cleanUp = newHook.callback())
+        }
+      })
+    }
+    run(fiber.child)
+    run(fiber.sibling)
+  }
+  function runCleanUp(fiber) {
+    if (!fiber) return
+    fiber.alternate?.effectHooks?.forEach(hook => {
+      if (hook?.deps.length > 0) {
+        hook?.cleanUp && hook?.cleanUp()
+      }
+    })
+    runCleanUp(fiber.child)
+    runCleanUp(fiber.sibling)
+  }
+  runCleanUp(wipRoot)
+  run(wipRoot)
+}
+```
+
+我们来看看页面效果
+
+![image-20240416105941481](https://gitee.com/nest-of-old-time/picture/raw/master/typora/202404161059644.png)
+
+可以看到，`deps`为空的时候不会调用`cleanUp`函数了，到目前为止，我们就已经完成所有的`React`任务，后面的就是用我们写的`React`源码去实战一个`todoList`
+
+等待下次更新吧,`xdm`~~~
 
 # 2、项目实战
 
